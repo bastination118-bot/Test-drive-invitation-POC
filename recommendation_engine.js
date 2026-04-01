@@ -54,7 +54,7 @@ class Neo4jGraphBuilder {
     }
 
     /**
-     * 从S-T-A结果构建内存图谱（核心）
+     * 从S-T-A结果构建内存图谱（V5.4修复版）
      * @param {Array} staResults - [{call_id, segments: [{stage, topic, act, ...}]}]
      */
     buildFromSTAResults(staResults) {
@@ -63,14 +63,17 @@ class Neo4jGraphBuilder {
             return this.exportGraphJSON();
         }
 
-        // 1. 统计Topic访问频次
-        staResults.forEach(call => {
-            if (!call.segments) return;
+        console.log('构建图谱输入:', staResults.length, '通电话');
 
+        // 1. 统计所有Topic和Transition
+        staResults.forEach((call, callIdx) => {
+            if (!call.segments || call.segments.length === 0) return;
+
+            // 遍历该通话的所有segments
             call.segments.forEach((seg, idx) => {
                 const topicKey = `${seg.stage}-${seg.topic}`;
 
-                // Topic统计
+                // 确保Topic节点存在
                 if (!this.topicStats.has(topicKey)) {
                     this.topicStats.set(topicKey, {
                         id: topicKey,
@@ -81,10 +84,11 @@ class Neo4jGraphBuilder {
                         conversionCount: 0
                     });
                 }
+                
                 const topicStat = this.topicStats.get(topicKey);
                 topicStat.visitCount++;
 
-                // Transition统计（除第一个segment外）
+                // 关键：创建Transition边（从上一个segment到当前segment）
                 if (idx > 0) {
                     const prevSeg = call.segments[idx - 1];
                     const prevKey = `${prevSeg.stage}-${prevSeg.topic}`;
@@ -101,6 +105,7 @@ class Neo4jGraphBuilder {
                             jumpType: this.calculateJumpType(prevSeg.stage, seg.stage)
                         });
                     }
+                    
                     const trans = this.transitionStats.get(transKey);
                     trans.count++;
                     if (call.conversionAnalysis?.isConverted) {
@@ -109,7 +114,7 @@ class Neo4jGraphBuilder {
                 }
             });
 
-            // 标记转化节点（最后一个segment）
+            // 标记转化节点
             if (call.conversionAnalysis?.isConverted && call.segments.length > 0) {
                 const lastSeg = call.segments[call.segments.length - 1];
                 const lastKey = `${lastSeg.stage}-${lastSeg.topic}`;
@@ -117,6 +122,8 @@ class Neo4jGraphBuilder {
                 if (topicStat) topicStat.conversionCount++;
             }
         });
+
+        console.log('统计结果:', this.topicStats.size, '节点,', this.transitionStats.size, '边');
 
         // 2. 计算转化率
         this.topicStats.forEach(topic => {
