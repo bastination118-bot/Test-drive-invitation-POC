@@ -639,6 +639,7 @@ function processImportedData(data) {
     
     displaySTAResults();
     updateGraphFromSTA();
+    renderGraph();  // V5-Final: 上传后自动刷新图谱
     
     showSyncNotification({
         total: data.length,
@@ -1096,12 +1097,31 @@ function renderGraph() {
         .attr('fill', d => d.isAggregate ? '#999' : '#333')
         .text(d => d.isAggregate ? '其他' : `${Math.round((d.weight || d.probability) * 100)}%`);
     
-    // 绘制节点
+    // 绘制节点 (V5-Final: 添加点击交互)
     const node = g.append('g')
         .selectAll('g')
         .data(data.nodes)
         .join('g')
         .attr('class', 'node')
+        .attr('cursor', 'pointer')  // 鼠标手势
+        .on('click', (event, d) => {
+            event.stopPropagation();
+            handleNodeClick(d, data, link, node);
+        })
+        .on('mouseover', function(event, d) {
+            d3.select(this).select('circle')
+                .attr('stroke', '#333')
+                .attr('stroke-width', 3);
+            showNodeTooltip(event, d);
+        })
+        .on('mouseout', function(event, d) {
+            if (!d.isSelected) {
+                d3.select(this).select('circle')
+                    .attr('stroke', '#fff')
+                    .attr('stroke-width', 2);
+            }
+            hideNodeTooltip();
+        })
         .call(d3.drag()
             .on('start', dragstarted)
             .on('drag', dragged)
@@ -1112,7 +1132,8 @@ function renderGraph() {
         .attr('r', d => Math.sqrt(d.frequency) * 3 + 15)
         .attr('fill', d => STAGE_DEF[d.stage].color)
         .attr('stroke', '#fff')
-        .attr('stroke-width', 2);
+        .attr('stroke-width', 2)
+        .attr('class', 'node-circle');
     
     // Topic名称
     node.append('text')
@@ -1165,6 +1186,253 @@ function renderGraph() {
 }
 
 // ============================================
+// 图谱节点交互 (V5-Final新增)
+// ============================================
+
+let selectedNodeId = null;
+
+/**
+ * 处理节点点击事件
+ */
+function handleNodeClick(d, graphData, linkElements, nodeElements) {
+    const isSameNode = selectedNodeId === d.id;
+    
+    // 重置所有节点和边的状态
+    nodeElements.selectAll('circle')
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 2)
+        .attr('opacity', 1);
+    
+    linkElements
+        .attr('stroke-opacity', d => d.isAggregate ? 0.3 : 0.6)
+        .attr('stroke-width', d => Math.max(1, (d.weight || d.probability) * 4));
+    
+    // 如果点击的是同一个节点，取消选择
+    if (isSameNode) {
+        selectedNodeId = null;
+        d.isSelected = false;
+        hidePathInfo();
+        return;
+    }
+    
+    // 选中新节点
+    selectedNodeId = d.id;
+    graphData.nodes.forEach(n => n.isSelected = (n.id === d.id));
+    
+    // 高亮选中节点
+    nodeElements.filter(n => n.id === d.id)
+        .select('circle')
+        .attr('stroke', '#FFD700')
+        .attr('stroke-width', 4);
+    
+    // 淡化其他节点
+    nodeElements.filter(n => n.id !== d.id)
+        .select('circle')
+        .attr('opacity', 0.3);
+    
+    // 高亮相关路径
+    const connectedLinks = [];
+    linkElements.each(function(l) {
+        const sourceId = l.source.id || l.source;
+        const targetId = l.target.id || l.target;
+        
+        if (sourceId === d.id || targetId === d.id) {
+            connectedLinks.push(l);
+            d3.select(this)
+                .attr('stroke-opacity', 1)
+                .attr('stroke-width', Math.max(3, (l.weight || l.probability) * 8));
+        } else {
+            d3.select(this)
+                .attr('stroke-opacity', 0.1);
+        }
+    });
+    
+    // 恢复相关节点的透明度
+    const connectedNodeIds = new Set();
+    connectedLinks.forEach(l => {
+        connectedNodeIds.add(l.source.id || l.source);
+        connectedNodeIds.add(l.target.id || l.target);
+    });
+    
+    nodeElements.filter(n => connectedNodeIds.has(n.id) && n.id !== d.id)
+        .select('circle')
+        .attr('opacity', 0.8);
+    
+    // 显示路径信息面板
+    showPathInfo(d, connectedLinks);
+}
+
+/**
+ * 显示节点Tooltip
+ */
+function showNodeTooltip(event, d) {
+    let tooltip = document.getElementById('graph-tooltip');
+    if (!tooltip) {
+        tooltip = document.createElement('div');
+        tooltip.id = 'graph-tooltip';
+        tooltip.style.cssText = `
+            position: fixed;
+            background: rgba(0,0,0,0.9);
+            color: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 1000;
+            max-width: 280px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        `;
+        document.body.appendChild(tooltip);
+    }
+    
+    const conversionRate = ((d.conversionRate || 0) * 100).toFixed(1);
+    
+    tooltip.innerHTML = `
+        <div style="font-weight:bold;margin-bottom:6px;">${d.name}</div>
+        <div>阶段: ${STAGE_DEF[d.stage]?.name || d.stage}</div>
+        <div>出现频次: ${d.frequency || 0}</div>
+        <div>转化率: ${conversionRate}%</div>
+        <div style="margin-top:6px;color:#aaa;font-size:11px;">点击查看相关路径</div>
+    `;
+    
+    tooltip.style.left = (event.clientX + 15) + 'px';
+    tooltip.style.top = (event.clientY + 15) + 'px';
+    tooltip.style.display = 'block';
+}
+
+/**
+ * 隐藏节点Tooltip
+ */
+function hideNodeTooltip() {
+    const tooltip = document.getElementById('graph-tooltip');
+    if (tooltip) {
+        tooltip.style.display = 'none';
+    }
+}
+
+/**
+ * 显示路径信息面板
+ */
+function showPathInfo(node, connectedLinks) {
+    let panel = document.getElementById('path-info-panel');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'path-info-panel';
+        panel.style.cssText = `
+            position: fixed;
+            right: 20px;
+            top: 100px;
+            width: 320px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            padding: 20px;
+            z-index: 1000;
+            max-height: 70vh;
+            overflow-y: auto;
+        `;
+        document.body.appendChild(panel);
+    }
+    
+    // 分类连接的边
+    const incoming = connectedLinks.filter(l => {
+        const targetId = l.target.id || l.target;
+        return targetId === node.id;
+    });
+    const outgoing = connectedLinks.filter(l => {
+        const sourceId = l.source.id || l.source;
+        return sourceId === node.id;
+    });
+    
+    const conversionRate = ((node.conversionRate || 0) * 100).toFixed(1);
+    
+    panel.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+            <h3 style="margin:0;font-size:16px;">${node.name}</h3>
+            <button onclick="hidePathInfo()" style="border:none;background:none;cursor:pointer;font-size:18px;">×</button>
+        </div>
+        
+        <div style="background:#f5f5f5;padding:12px;border-radius:8px;margin-bottom:16px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+                <span>阶段</span>
+                <span style="font-weight:500;">${STAGE_DEF[node.stage]?.name || node.stage}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+                <span>出现频次</span>
+                <span style="font-weight:500;">${node.frequency || 0}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+                <span>转化率</span>
+                <span style="font-weight:500;color:${node.conversionRate >= 0.5 ? '#4CAF50' : '#F44336'};">${conversionRate}%</span>
+            </div>
+        </div>
+        
+        ${outgoing.length > 0 ? `
+        <div style="margin-bottom:16px;">
+            <h4 style="margin:0 0 10px 0;font-size:13px;color:#666;">后续路径 (${outgoing.length})</h4>
+            ${outgoing.map(l => {
+                const targetId = l.target.id || l.target;
+                const targetNode = AppState.graphData.nodes.find(n => n.id === targetId);
+                const weight = ((l.weight || 0) * 100).toFixed(0);
+                const color = l.weight >= 0.6 ? '#4CAF50' : l.weight >= 0.4 ? '#FFC107' : '#F44336';
+                return `
+                    <div style="padding:8px;background:#fafafa;border-radius:6px;margin-bottom:6px;font-size:12px;">
+                        <div style="display:flex;justify-content:space-between;">
+                            <span>→ ${targetNode?.name || targetId}</span>
+                            <span style="color:${color};font-weight:500;">${weight}%</span>
+                        </div>
+                        ${l.actName ? `<div style="color:#666;margin-top:4px;">动作: ${l.actName}</div>` : ''}
+                    </div>
+                `;
+            }).join('')}
+        </div>
+        ` : ''}
+        
+        ${incoming.length > 0 ? `
+        <div>
+            <h4 style="margin:0 0 10px 0;font-size:13px;color:#666;">前置路径 (${incoming.length})</h4>
+            ${incoming.map(l => {
+                const sourceId = l.source.id || l.source;
+                const sourceNode = AppState.graphData.nodes.find(n => n.id === sourceId);
+                const weight = ((l.weight || 0) * 100).toFixed(0);
+                return `
+                    <div style="padding:8px;background:#fafafa;border-radius:6px;margin-bottom:6px;font-size:12px;">
+                        <div style="display:flex;justify-content:space-between;">
+                            <span>← ${sourceNode?.name || sourceId}</span>
+                            <span style="color:#666;">${weight}%</span>
+                        </div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+        ` : ''}
+    `;
+    
+    panel.style.display = 'block';
+}
+
+/**
+ * 隐藏路径信息面板
+ */
+function hidePathInfo() {
+    const panel = document.getElementById('path-info-panel');
+    if (panel) {
+        panel.style.display = 'none';
+    }
+    selectedNodeId = null;
+    
+    // 重置图谱高亮状态
+    d3.selectAll('.node circle')
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 2)
+        .attr('opacity', 1);
+    
+    d3.selectAll('.link')
+        .attr('stroke-opacity', d => d.isAggregate ? 0.5 : 0.8)
+        .attr('stroke-width', d => Math.max(1.5, (d.weight || d.probability) * 6));
+}
+
+// ============================================
 // 通知系统
 // ============================================
 
@@ -1209,6 +1477,7 @@ window.toggleStage = toggleStage;
 window.selectTopic = selectTopic;
 window.exportSTAToJSON = exportSTAToJSON;
 window.exportToNeo4j = exportToNeo4j;
+window.hidePathInfo = hidePathInfo;  // V5-Final: 导出路径面板关闭函数
 
 // ============================================
 // 实时推荐系统 (v4.1新增)
