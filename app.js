@@ -49,17 +49,16 @@ function initApp() {
     document.getElementById('login-page')?.classList.add('active');
     document.getElementById('app')?.classList.remove('active');
     
-    // 从localStorage恢复
-    const saved = localStorage.getItem('zhiji_sta_v5');
-    if (saved) {
-        try {
+    // 从localStorage恢复（只恢复图谱，不恢复原始数据）
+    try {
+        const saved = localStorage.getItem('zhiji_sta_v5');
+        if (saved) {
             const parsed = JSON.parse(saved);
-            AppState.staResults = parsed.staResults || [];
             AppState.graphData = parsed.graphData || null;
-            console.log('从localStorage恢复', AppState.staResults.length, '条记录');
-        } catch (e) {
-            console.error('恢复数据失败', e);
+            console.log('从localStorage恢复图谱:', AppState.graphData?.nodes?.length || 0, '节点');
         }
+    } catch (e) {
+        console.error('恢复数据失败', e);
     }
     
     updateDashboardStats();
@@ -110,10 +109,6 @@ function navigateTo(page) {
     }
 }
 
-function initNavigation() {
-    // 导航已在HTML中通过onclick绑定
-}
-
 // ============================================
 // 文件上传与S-T-A分析
 // ============================================
@@ -141,7 +136,6 @@ function handleFileUpload(input) {
             });
             
             hideLoading();
-            showNotification(`成功导入 ${rows.length} 条案例，生成图谱`, 'success');
             
             // 自动跳转到图谱页
             setTimeout(() => navigateTo('graph'), 500);
@@ -202,55 +196,17 @@ async function processInChunks(rows, chunkSize, onProgress) {
     AppState.graphData = builder.buildFromSTAResults(allResults);
     AppState.staResults = allResults;
     
-    // 持久化（带配额保护和采样）
+    // 只存图谱，不存原始数据（避免localStorage超限）
     try {
-        // 如果数据量过大，只采样存储前1000条和图谱
-        const maxRecords = 1000;
-        const recordsToStore = allResults.length > maxRecords 
-            ? allResults.slice(0, maxRecords) 
-            : allResults;
-        
-        const dataToStore = {
-            staResults: recordsToStore,
+        localStorage.setItem('zhiji_sta_v5', JSON.stringify({
             graphData: AppState.graphData,
-            totalCount: allResults.length,  // 记录原始总数
+            totalCount: allResults.length,
             timestamp: Date.now()
-        };
-        
-        const serialized = JSON.stringify(dataToStore);
-        
-        // 检查大小（localStorage通常限制5-10MB）
-        if (serialized.length > 4 * 1024 * 1024) {  // 4MB安全阈值
-            console.warn('数据过大，仅保存图谱结构，不保存原始记录');
-            localStorage.setItem('zhiji_sta_v5', JSON.stringify({
-                staResults: [],  // 不存原始数据
-                graphData: AppState.graphData,
-                totalCount: allResults.length,
-                timestamp: Date.now()
-            }));
-        } else {
-            localStorage.setItem('zhiji_sta_v5', serialized);
-        }
-        
+        }));
         showNotification(`成功导入 ${allResults.length} 条案例，生成图谱`, 'success');
     } catch (e) {
         console.error('localStorage存储失败:', e);
-        if (e.name === 'QuotaExceededError') {
-            // 配额超限，只存图谱
-            try {
-                localStorage.setItem('zhiji_sta_v5', JSON.stringify({
-                    staResults: [],
-                    graphData: AppState.graphData,
-                    totalCount: allResults.length,
-                    timestamp: Date.now()
-                }));
-                showNotification(`导入成功！因数据量大，仅保存图谱结构`, 'info');
-            } catch (e2) {
-                showNotification('导入成功，但本地存储失败（请刷新后重新上传）', 'warning');
-            }
-        } else {
-            showNotification('导入成功，但本地存储失败', 'warning');
-        }
+        showNotification(`导入成功，但无法本地存储`, 'warning');
     }
     
     // 更新显示
@@ -555,7 +511,7 @@ function selectOption(index) {
     if (container) {
         container.innerHTML += `
             <div class="next-round-hint">
-                已选择"${opt.actName}"，客户回复已模拟。
+                已选择"${option.actName}"，客户回复已模拟。
                 <br>继续输入下一轮客户问题...
             </div>
         `;
