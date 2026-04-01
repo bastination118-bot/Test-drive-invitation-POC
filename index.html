@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智己汽车 - 试驾邀约会话路径概率图POC</title>
+    <base href="./">
+    <link rel="stylesheet" href="style.css">
+    <!-- D3国内镜像 -->
+    <script src="https://cdn.bootcdn.net/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- 登录页 -->
+    <div id="login-page" class="page active">
+        <div class="login-container">
+            <div class="login-brand">
+                <div class="logo">智己汽车</div>
+                <h2>试驾邀约会话路径概率图POC</h2>
+                <p>基于成功案例路径概率图的新人销售实时引导系统</p>
+            </div>
+            <div class="login-form">
+                <div class="form-group">
+                    <label>账号</label>
+                    <input type="text" id="login-account" placeholder="请输入账号" value="demo">
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input type="password" id="login-password" placeholder="请输入密码" value="demo">
+                </div>
+                <div class="form-options">
+                    <label class="checkbox">
+                        <input type="checkbox" checked> 记住密码
+                    </label>
+                    <a href="#" class="forgot-link">忘记密码？</a>
+                </div>
+                <button class="btn btn-primary btn-block" onclick="login()">登录</button>
+            </div>
+            <div class="login-footer"><p>智己汽车试驾邀约POC产品 ©2026</p></div>
+        </div>
+    </div>
+
+    <!-- 主应用 -->
+    <div id="app" class="page">
+        <header class="top-nav">
+            <div class="nav-brand"><span class="mini-logo">智己</span><span class="nav-title">试驾邀约路径概率图</span></div>
+            <nav class="nav-tabs">
+                <a href="#" class="nav-tab active" data-page="dashboard" onclick="navigateTo('dashboard')">首页</a>
+                <a href="#" class="nav-tab" data-page="case-import" onclick="navigateTo('case-import')">案例拆解</a>
+                <a href="#" class="nav-tab" data-page="graph" onclick="navigateTo('graph')">路径图谱</a>
+                <a href="#" class="nav-tab" data-page="guide" onclick="navigateTo('guide')">实时引导</a>
+                <a href="#" class="nav-tab" data-page="report" onclick="navigateTo('report')">数据报表</a>
+            </nav>
+            <div class="nav-actions"><span class="sync-status">数据已同步</span></div>
+        </header>
+
+        <aside class="sidebar">
+            <div class="sidebar-section">
+                <h3>Stage-Topic 导航</h3>
+                <div class="stage-tree"></div>
+            </div>
+            <div class="sidebar-section">
+                <h3>路径类型说明</h3>
+                <div class="legend-item"><div class="legend-line forward"></div><span>正向迁移 (A/B/C)</span></div>
+                <div class="legend-item"><div class="legend-line backward"></div><span>逆向跳转 (D)</span></div>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <!-- 首页 -->
+            <div id="page-dashboard" class="content-page active">
+                <h1>仪表盘</h1>
+                <div class="dashboard-stats">
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-total-cases">0</div>
+                        <div class="stat-label">分析案例数</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-conversion-rate">0%</div>
+                        <div class="stat-label">平均转化率</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-path-count">0</div>
+                        <div class="stat-label">路径节点数</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 案例拆解 -->
+            <div id="page-case-import" class="content-page">
+                <h1>案例拆解</h1>
+                <div class="upload-zone" onclick="document.getElementById('file-input').click()">
+                    <input type="file" id="file-input" accept=".csv,.xlsx" style="display:none;" onchange="handleFileUpload(this)">
+                    <p>点击上传案例文件 (CSV/Excel)</p>
+                    <p class="upload-hint">支持 standard_data_source.csv 格式</p>
+                </div>
+                <div id="upload-result"></div>
+                <div id="sta-results-container"></div>
+            </div>
+
+            <!-- 路径图谱 -->
+            <div id="page-graph" class="content-page">
+                <h1>路径概率图谱</h1>
+                <div id="graph-container"></div>
+            </div>
+
+            <!-- 实时引导 -->
+            <div id="page-guide" class="content-page">
+                <h1>新人销售实时引导</h1>
+                <div class="guide-container">
+                    <div class="input-section">
+                        <label>客户当前问题/意图：</label>
+                        <input type="text" id="customer-intent" placeholder="例如：续航有点焦虑，听说电车不保值...">
+                        <button class="btn btn-primary" onclick="generateRecommendation()">获取推荐</button>
+                    </div>
+                    <div id="recommendation-result"></div>
+                    <div id="conversation-flow"></div>
+                </div>
+            </div>
+
+            <!-- 数据报表 -->
+            <div id="page-report" class="content-page">
+                <h1>数据报表</h1>
+            </div>
+        </main>
+    </div>
+
+    <!-- 加载遮罩 -->
+    <div id="loading-mask" style="display:none;">
+        <div class="loading-spinner"></div>
+        <div id="loading-text">正在处理...</div>
+    </div>
+
+    <script src="gbk_decoder.js"></script>
+    <script src="recommendation_engine.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
