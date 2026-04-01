@@ -27,32 +27,107 @@ const STAGE_DEF = {
     S5: { name: '邀约收口', color: '#9C27B0', description: '明确试驾时间、地点、准备事项' }
 };
 
-// Topic定义 (按Stage分组)
+// ============================================
+// Topic定义 (带权重 - V5-Final修复)
+// ============================================
 const TOPIC_DEF = {
     // S1 开场破冰
-    'T1-1': { stage: 'S1', name: '自我介绍与品牌背书', keywords: ['您好', '我是', '智己', '顾问'] },
-    'T1-2': { stage: 'S1', name: '留资意图确认', keywords: ['看到您', '关注', '留资', '在线'] },
-    'T1-3': { stage: 'S1', name: '礼貌寒暄与快速切入', keywords: ['你好', '您好', '打扰', '方便'] },
+    'T1-1': { stage: 'S1', name: '自我介绍与品牌背书', keywords: [
+        { word: '您好', weight: 0.3 },
+        { word: '我是', weight: 0.3 },
+        { word: '智己', weight: 0.6 },  // 核心词，权重高
+        { word: '顾问', weight: 0.4 }
+    ]},
+    'T1-2': { stage: 'S1', name: '留资意图确认', keywords: [
+        { word: '看到您', weight: 0.5 },
+        { word: '关注', weight: 0.4 },
+        { word: '留资', weight: 0.7 },  // 核心词
+        { word: '在线', weight: 0.3 }
+    ]},
+    'T1-3': { stage: 'S1', name: '礼貌寒暄与快速切入', keywords: [
+        { word: '你好', weight: 0.3 },
+        { word: '您好', weight: 0.3 },
+        { word: '打扰', weight: 0.4 },
+        { word: '方便', weight: 0.4 }
+    ]},
     
     // S2 需求挖掘
-    'T2-1': { stage: 'S2', name: '车型偏好确认', keywords: ['关注哪款', '看的是', '喜欢', '考虑'] },
-    'T2-2': { stage: 'S2', name: '试驾需求确认', keywords: ['试驾', '体验一下', '试试看'] },
-    'T2-3': { stage: 'S2', name: '购车场景与预算探询', keywords: ['预算', '用途', '家里用', '代步'] },
+    'T2-1': { stage: 'S2', name: '车型偏好确认', keywords: [
+        { word: '关注哪款', weight: 0.6 },
+        { word: '看的是', weight: 0.5 },
+        { word: '喜欢', weight: 0.4 },
+        { word: '考虑', weight: 0.5 }
+    ]},
+    'T2-2': { stage: 'S2', name: '试驾需求确认', keywords: [
+        { word: '试驾', weight: 0.7 },  // 核心词
+        { word: '体验一下', weight: 0.6 },
+        { word: '试试看', weight: 0.5 }
+    ]},
+    'T2-3': { stage: 'S2', name: '购车场景与预算探询', keywords: [
+        { word: '预算', weight: 0.7 },  // 核心词
+        { word: '用途', weight: 0.5 },
+        { word: '家里用', weight: 0.5 },
+        { word: '代步', weight: 0.4 }
+    ]},
     
     // S3 产品价值传递
-    'T3-1': { stage: 'S3', name: '核心配置输出', keywords: ['配置', '续航', '电池', '动力'] },
-    'T3-2': { stage: 'S3', name: '价格/优惠政策传递', keywords: ['价格', '优惠', '补贴', '落地价'] },
-    'T3-3': { stage: 'S3', name: '服务优势与差异化', keywords: ['服务', '质保', '售后', '保障'] },
+    'T3-1': { stage: 'S3', name: '核心配置输出', keywords: [
+        { word: '配置', weight: 0.5 },
+        { word: '续航', weight: 0.7 },  // 核心词
+        { word: '电池', weight: 0.6 },
+        { word: '动力', weight: 0.5 }
+    ]},
+    'T3-2': { stage: 'S3', name: '价格/优惠政策传递', keywords: [
+        { word: '价格', weight: 0.6 },
+        { word: '优惠', weight: 0.7 },  // 核心词
+        { word: '补贴', weight: 0.7 },  // 核心词
+        { word: '落地价', weight: 0.6 }
+    ]},
+    'T3-3': { stage: 'S3', name: '服务优势与差异化', keywords: [
+        { word: '服务', weight: 0.5 },
+        { word: '质保', weight: 0.6 },
+        { word: '售后', weight: 0.6 },
+        { word: '保障', weight: 0.5 }
+    ]},
     
     // S4 异议处理
-    'T4-1': { stage: 'S4', name: '价格顾虑化解', keywords: ['贵', '便宜', '降价', '再考虑'] },
-    'T4-2': { stage: 'S4', name: '试驾相关顾虑化解', keywords: ['不用试驾', '没时间', '太远了'] },
-    'T4-3': { stage: 'S4', name: '异地/售后顾虑化解', keywords: ['异地', '外地', '上牌', '保养'] },
+    'T4-1': { stage: 'S4', name: '价格顾虑化解', keywords: [
+        { word: '贵', weight: 0.8 },  // 核心词，权重极高
+        { word: '便宜', weight: 0.6 },
+        { word: '降价', weight: 0.7 },
+        { word: '再考虑', weight: 0.5 }
+    ]},
+    'T4-2': { stage: 'S4', name: '试驾相关顾虑化解', keywords: [
+        { word: '不用试驾', weight: 0.8 },
+        { word: '没时间', weight: 0.7 },
+        { word: '太远了', weight: 0.6 }
+    ]},
+    'T4-3': { stage: 'S4', name: '异地/售后顾虑化解', keywords: [
+        { word: '异地', weight: 0.7 },
+        { word: '外地', weight: 0.6 },
+        { word: '上牌', weight: 0.6 },
+        { word: '保养', weight: 0.7 }
+    ]},
     
     // S5 邀约收口
-    'T5-1': { stage: 'S5', name: '微信留资邀约', keywords: ['微信', '加您', '联系方式', '发给您'] },
-    'T5-2': { stage: 'S5', name: '试驾时间确认', keywords: ['约', '时间', '哪天', '周六日'] },
-    'T5-3': { stage: 'S5', name: '后续跟进确认', keywords: ['到时候', '再联系', '保持联系', '随时'] }
+    'T5-1': { stage: 'S5', name: '微信留资邀约', keywords: [
+        { word: '微信', weight: 0.7 },  // 核心词
+        { word: '加您', weight: 0.7 },  // 核心词
+        { word: '联系方式', weight: 0.5 },
+        { word: '发给您', weight: 0.5 }
+    ]},
+    'T5-2': { stage: 'S5', name: '试驾时间确认', keywords: [
+        { word: '约', weight: 0.5 },
+        { word: '时间', weight: 0.5 },
+        { word: '哪天', weight: 0.6 },
+        { word: '周六日', weight: 0.6 }
+    ]},
+    'T5-3': { stage: 'S5', name: '后续跟进确认', keywords: [
+        { word: '到时候', weight: 0.5 },
+        { word: '再联系', weight: 0.6 },
+        { word: '保持联系', weight: 0.7 },
+        { word: '随时', weight: 0.5 }
+    ]}
 };
 
 // Act定义 (销售动作)
@@ -287,7 +362,7 @@ function detectStage(content) {
 }
 
 /**
- * 识别Topic
+ * 识别Topic (V5-Final修复: 加权置信度算法)
  */
 function detectTopic(content, stage) {
     // 获取该stage下的所有topics
@@ -295,19 +370,42 @@ function detectTopic(content, stage) {
         .filter(([code, def]) => def.stage === stage);
     
     let bestTopic = stageTopics[0]?.[0] || 'T1-1';
-    let maxScore = 0;
+    let maxWeightedScore = 0;
+    let bestMatchDetails = null;
     
     for (const [topicCode, topicDef] of stageTopics) {
-        const score = topicDef.keywords.filter(kw => content.includes(kw)).length;
-        if (score > maxScore) {
-            maxScore = score;
+        let weightedScore = 0;
+        let matchedKeywords = [];
+        
+        for (const kw of topicDef.keywords) {
+            if (content.includes(kw.word)) {
+                weightedScore += kw.weight;
+                matchedKeywords.push(kw.word);
+            }
+        }
+        
+        if (weightedScore > maxWeightedScore) {
+            maxWeightedScore = weightedScore;
             bestTopic = topicCode;
+            bestMatchDetails = {
+                topic: topicCode,
+                topicName: topicDef.name,
+                weightedScore: weightedScore,
+                matchedKeywords: matchedKeywords
+            };
         }
     }
     
+    // V5-Final: 使用加权置信度 - 命中1个高权重词即可达到0.6阈值
+    // 例如: "贵" 权重 0.8, 置信度 = 0.8 (超过0.6阈值)
+    // 例如: "续航" 权重 0.7, 置信度 = 0.7 (超过0.6阈值)
+    const confidence = Math.min(maxWeightedScore, 1.0);
+    
     return {
         topic: bestTopic,
-        topicName: TOPIC_DEF[bestTopic]?.name || ''
+        topicName: TOPIC_DEF[bestTopic]?.name || '',
+        confidence: confidence,
+        matchDetails: bestMatchDetails
     };
 }
 
@@ -809,11 +907,85 @@ function updateGraphFromSTA() {
     // 更新全局图谱数据
     AppState.graphData = { nodes, links };
     
+    // V5-Final: 应用权重更新公式
+    updateGraphWeights(links, AppState.staResults);
+    
     // V5-Fix: 同时更新推荐引擎
     initRecommendationEngineFromGraph();
     
     console.log('图谱更新完成:', { nodes: nodes.length, links: links.length });
     console.log('推荐引擎已同步更新');
+}
+
+/**
+ * 更新图谱边权重 (V5-Final)
+ * 规则: 成功则 weight *= 1.1 (上限1.0), 失败则 weight *= 0.9
+ */
+function updateGraphWeights(edges, results) {
+    if (!edges || edges.length === 0 || !results || results.length === 0) {
+        return;
+    }
+    
+    console.log('开始更新图谱权重...');
+    
+    // 统计每条边的成功/失败次数
+    const edgeStats = {};
+    
+    for (const result of results) {
+        const isSuccess = result.conversionAnalysis?.isConverted || false;
+        
+        // 遍历该结果的所有迁移
+        for (let i = 1; i < result.segments.length; i++) {
+            const prevSeg = result.segments[i - 1];
+            const currSeg = result.segments[i];
+            const edgeKey = `${prevSeg.stage}-${prevSeg.topic}|${currSeg.stage}-${currSeg.topic}`;
+            
+            if (!edgeStats[edgeKey]) {
+                edgeStats[edgeKey] = { success: 0, failure: 0 };
+            }
+            
+            if (isSuccess) {
+                edgeStats[edgeKey].success++;
+            } else {
+                edgeStats[edgeKey].failure++;
+            }
+        }
+    }
+    
+    // 应用权重更新公式
+    for (const edge of edges) {
+        const sourceId = edge.source.id || edge.source;
+        const targetId = edge.target.id || edge.target;
+        const edgeKey = `${sourceId}|${targetId}`;
+        const stats = edgeStats[edgeKey];
+        
+        if (!stats) continue;
+        
+        const total = stats.success + stats.failure;
+        if (total === 0) continue;
+        
+        // 计算动态权重调整
+        // 基础权重 * 成功率调整因子
+        let weightMultiplier = 1.0;
+        
+        // 成功次数多，提升权重 (每次成功 +10%)
+        if (stats.success > 0) {
+            weightMultiplier *= Math.pow(1.1, stats.success);
+        }
+        
+        // 失败次数多，降低权重 (每次失败 -10%)
+        if (stats.failure > 0) {
+            weightMultiplier *= Math.pow(0.9, stats.failure);
+        }
+        
+        // 应用权重更新公式并限制在 0.1-1.0 范围内
+        edge.weight = Math.max(0.1, Math.min(1.0, edge.weight * weightMultiplier));
+        edge.displayWeight = edge.weight;
+        
+        console.log(`权重更新: ${edgeKey} - 成功:${stats.success} 失败:${stats.failure} - 新权重:${edge.weight.toFixed(3)}`);
+    }
+    
+    console.log('图谱权重更新完成');
 }
 
 /**
@@ -895,13 +1067,23 @@ function renderGraph() {
         .force('center', d3.forceCenter(width / 2, height / 2))
         .force('collision', d3.forceCollide().radius(50));
     
-    // 绘制边
+    // 绘制边 (V5-Final: 添加虚线样式给聚合边)
     const link = g.append('g')
         .selectAll('line')
         .data(data.links)
         .join('line')
         .attr('class', d => `link ${d.pathType}`)
-        .attr('stroke-width', d => Math.max(1.5, d.probability * 6));
+        .attr('stroke-width', d => Math.max(1.5, (d.weight || d.probability) * 6))
+        .attr('stroke', d => {
+            // V5: 根据权重设置颜色
+            const w = d.weight || 0.5;
+            if (w >= 0.8) return '#2E7D32'; // 深绿: 高权重
+            if (w >= 0.6) return '#4CAF50'; // 绿
+            if (w >= 0.4) return '#FFC107'; // 黄
+            return '#F44336'; // 红: 低权重
+        })
+        .attr('stroke-dasharray', d => d.isAggregate ? '5,5' : 'none')  // V5-Final: 聚合边用虚线
+        .attr('stroke-opacity', d => d.isAggregate ? 0.5 : 0.8);
     
     // 绘制边标签
     const linkLabel = g.append('g')
@@ -911,7 +1093,8 @@ function renderGraph() {
         .attr('class', 'link-label')
         .attr('font-size', '10px')
         .attr('text-anchor', 'middle')
-        .text(d => `${Math.round(d.probability * 100)}%`);
+        .attr('fill', d => d.isAggregate ? '#999' : '#333')
+        .text(d => d.isAggregate ? '其他' : `${Math.round((d.weight || d.probability) * 100)}%`);
     
     // 绘制节点
     const node = g.append('g')
