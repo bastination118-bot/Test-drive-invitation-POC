@@ -30,25 +30,34 @@ const STAGE_DEF = {
 };
 
 // ============================================
-// 编码检测与解码
+// 编码检测与解码（使用原生TextDecoder）
 // ============================================
 function detectAndDecode(arrayBuffer) {
     const bytes = new Uint8Array(arrayBuffer);
     
-    // 检测是否包含GBK特征字节
-    let gbkBytes = 0;
-    for (let i = 0; i < Math.min(bytes.length, 1000); i++) {
+    // 采样前1000字节检测编码
+    let highBytes = 0;
+    const sampleSize = Math.min(bytes.length, 1000);
+    
+    for (let i = 0; i < sampleSize; i++) {
         if (bytes[i] > 0x80) {
-            gbkBytes++;
+            highBytes++;
         }
     }
     
-    // 如果高字节比例高，可能是GBK
-    const isGBK = gbkBytes > 10;
+    // 如果高字节比例>5%，可能是GBK
+    const isGBK = highBytes > (sampleSize * 0.05);
     
-    if (isGBK && typeof decodeGBK === 'function') {
-        console.log('检测到GBK编码，使用GBK解码');
-        return decodeGBK(arrayBuffer);
+    if (isGBK) {
+        try {
+            // 尝试使用原生TextDecoder解码GBK
+            const decoder = new TextDecoder('gbk', { fatal: true });
+            const text = decoder.decode(arrayBuffer);
+            console.log('使用原生TextDecoder解码GBK成功');
+            return text;
+        } catch (e) {
+            console.warn('GBK解码失败，回退到UTF-8:', e);
+        }
     }
     
     // 默认UTF-8
@@ -219,18 +228,15 @@ async function processCalls(callGroups, onProgress) {
         const callId = callIds[i];
         const rows = callGroups[callId];
         
-        // 按时间排序（如果有时间字段）
-        rows.sort((a, b) => {
-            const timeA = a.audio_date || a.create_time || 0;
-            const timeB = b.audio_date || b.create_time || 0;
-            return timeA - timeB;
-        });
-        
-        // 分析单个通话的所有segments
+        // 分析单个通话
         const callResult = analyzeCall(callId, rows);
-        allResults.push(callResult);
         
-        if (i % 10 === 0) {
+        // 只保存有多个segments的通话（用于生成路径）
+        if (callResult.segments.length >= 1) {
+            allResults.push(callResult);
+        }
+        
+        if (i % 100 === 0) {
             await new Promise(resolve => setTimeout(resolve, 0));
             onProgress(i + 1, callIds.length);
         }
@@ -239,7 +245,9 @@ async function processCalls(callGroups, onProgress) {
     onProgress(callIds.length, callIds.length);
     
     // 构建图谱
-    console.log('构建图谱，共', allResults.length, '通电话');
+    console.log('构建图谱，共', allResults.length, '通电话，总segments:', 
+        allResults.reduce((sum, c) => sum + c.segments.length, 0));
+    
     const builder = new Neo4jGraphBuilder();
     AppState.graphData = builder.buildFromSTAResults(allResults);
     AppState.staResults = allResults;
@@ -255,7 +263,7 @@ async function processCalls(callGroups, onProgress) {
             totalCount: allResults.length,
             timestamp: Date.now()
         }));
-        showNotification(`成功导入 ${allResults.length} 通电话，生成图谱`, 'success');
+        showNotification(`成功导入 ${allResults.length} 通电话`, 'success');
     } catch (e) {
         console.error('localStorage存储失败:', e);
         showNotification(`导入成功，但无法本地存储`, 'warning');
@@ -265,52 +273,122 @@ async function processCalls(callGroups, onProgress) {
 }
 
 /**
- * 分析单个通话的所有对话轮次
+ * 分析单通电话 - 解析asr字段内的多轮对话
  */
 function analyzeCall(callId, rows) {
-    const segments = [];
+    // 每行是一个call，取第一行
+    const row = rows[0];
+    const asrText = row.asr || '';
     
-    rows.forEach((row, idx) => {
-        const content = row.asr || row.asr_text || row.content || row.message || '';
-        const role = row.role || detectRoleByContent(content);
-        
-        const stage = detectStage(content, idx);
-        const topic = detectTopic(content, stage);
-        const act = detectAct(content, role);
-        
-        segments.push({
-            stage: stage,
-            topic: topic,
-            act: act,
-            content: content.substring(0, 100),
-            role: role,
-            topicName: TOPIC_NAMES[topic] || topic,
-            stageName: STAGE_NAMES[stage] || stage,
-            rowIdx: idx
-        });
-    });
+    // 解析asr文本中的多轮对话
+    // 格式: "时间 角色:内容 时间 角色:内容..."
+    const segments = parseASRText(asrText);
     
-    // 判断转化（根据最后一条或标记字段）
-    const lastRow = rows[rows.length - 1];
-    const isConverted = (lastRow.reason_type_name || '').includes('意向') || 
-                        (lastRow.result || '').includes('成功') || 
-                        (lastRow.call_result || '').includes('约');
+    // 判断转化
+    const isConverted = (row.reason_type_name || '').includes('意向') || 
+                        (row.call_result || '').includes('约') ||
+                        (row.call_type || '').includes('成功');
     
     return {
         call_id: callId,
         segments: segments,
-        conversionAnalysis: {
-            isConverted: isConverted
-        }
+        conversionAnalysis: { isConverted }
     };
 }
 
-function detectRoleByContent(content) {
-    // 简单启发式：以"您好"开头的是销售
-    if (content.includes('您好') || content.includes('我是') || content.includes('智己')) {
-        return 'sales';
+/**
+ * 解析ASR文本为segments
+ * 格式: "13:58:15 销售:你好 13:58:17 客户:你好..."
+ */
+function parseASRText(asrText) {
+    const segments = [];
+    
+    // 移除首尾引号
+    let text = asrText.replace(/^"|"$/g, '');
+    
+    // 匹配时间戳+角色+内容的模式
+    // 格式: HH:MM:SS 角色:内容
+    const pattern = /(\d{1,2}:\d{2}:\d{2})\s*([销售客户]+)\s*:\s*([^\d]{0,200})/g;
+    
+    let match;
+    let lastTimestamp = null;
+    let lastRole = null;
+    
+    while ((match = pattern.exec(text)) !== null) {
+        const timestamp = match[1];
+        const role = match[2].includes('销售') ? 'sales' : 'customer';
+        const content = match[3].trim();
+        
+        if (content.length < 2) continue; // 跳过太短的
+        
+        // 识别Stage/Topic/Act
+        const stage = detectStage(content, segments.length);
+        const topic = detectTopic(content, stage);
+        const act = detectAct(content, role);
+        
+        segments.push({
+            stage,
+            topic,
+            act,
+            content: content.substring(0, 100),
+            role,
+            topicName: TOPIC_NAMES[topic] || topic,
+            stageName: STAGE_NAMES[stage] || stage,
+            timestamp
+        });
+        
+        lastTimestamp = timestamp;
+        lastRole = role;
     }
-    return 'customer';
+    
+    // 如果正则没有匹配到，尝试简单分割
+    if (segments.length === 0) {
+        // 按常见分隔符分割
+        const parts = text.split(/(?=\d{1,2}:\d{2})/).filter(p => p.trim());
+        
+        parts.forEach((part, idx) => {
+            // 检测角色
+            let role = 'customer';
+            if (part.includes('销售') || part.includes('顾问') || idx % 2 === 0) {
+                role = 'sales';
+            }
+            
+            const content = part.replace(/^[^:]*:/, '').trim() || part.trim();
+            if (content.length < 2) return;
+            
+            const stage = detectStage(content, idx);
+            const topic = detectTopic(content, stage);
+            const act = detectAct(content, role);
+            
+            segments.push({
+                stage,
+                topic,
+                act,
+                content: content.substring(0, 100),
+                role,
+                topicName: TOPIC_NAMES[topic] || topic,
+                stageName: STAGE_NAMES[stage] || stage
+            });
+        });
+    }
+    
+    // 如果还是没有，整段作为一个segment
+    if (segments.length === 0 && text.length > 5) {
+        const stage = detectStage(text, 0);
+        const topic = detectTopic(text, stage);
+        
+        segments.push({
+            stage,
+            topic,
+            act: 'A1',
+            content: text.substring(0, 100),
+            role: 'sales',
+            topicName: TOPIC_NAMES[topic] || topic,
+            stageName: STAGE_NAMES[stage] || stage
+        });
+    }
+    
+    return segments;
 }
 
 function parseCSV(text) {
