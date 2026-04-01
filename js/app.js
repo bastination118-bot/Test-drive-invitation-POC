@@ -425,32 +425,6 @@ function analyzeSTA(asrText, callMetadata = {}) {
 // ============================================
 
 /**
- * 检测并转换编码 (GBK/UTF-8自动识别)
- */
-function decodeTextWithEncoding(buffer) {
-    // 首先尝试 UTF-8
-    try {
-        const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
-        const utf8Text = utf8Decoder.decode(buffer);
-        // 检查是否包含乱码特征
-        if (!utf8Text.includes('��') && !utf8Text.includes('�')) {
-            return utf8Text;
-        }
-    } catch (e) {
-        // UTF-8 解码失败，尝试 GBK
-    }
-    
-    // 尝试 GBK/GB18030
-    try {
-        const gbkDecoder = new TextDecoder('gb18030', { fatal: false });
-        return gbkDecoder.decode(buffer);
-    } catch (e) {
-        // 兜底: 使用 UTF-8 非严格模式
-        return new TextDecoder('utf-8', { fatal: false }).decode(buffer);
-    }
-}
-
-/**
  * 检测文本是否为有效的UTF-8中文
  */
 function isValidChineseText(text) {
@@ -476,16 +450,23 @@ function handleFileUpload(input) {
         try {
             let data;
             if (file.name.endsWith('.csv')) {
-                // V5: 使用 ArrayBuffer 读取以支持编码检测
+                // V5-Fix: 使用 GBK 解码器处理中文编码
                 const buffer = e.target.result;
-                let text = decodeTextWithEncoding(buffer);
                 
-                // 二次校验: 如果检测到乱码，尝试 GBK
+                // 首先检测是否为 GBK 编码
+                const isGBK = isGBKEncoded(buffer);
+                console.log('编码检测:', isGBK ? 'GBK' : 'UTF-8');
+                
+                // 使用智能解码
+                let text = smartDecode(buffer);
+                
+                // 验证解码结果
                 if (!isValidChineseText(text)) {
-                    const gbkDecoder = new TextDecoder('gb18030', { fatal: false });
-                    text = gbkDecoder.decode(buffer);
+                    console.warn('解码失败，尝试 GBK 强制解码');
+                    text = decodeGBK(buffer);
                 }
                 
+                console.log('CSV 解码成功，前200字符:', text.substring(0, 200));
                 data = parseStandardCSV(text);
             } else if (file.name.endsWith('.xlsx')) {
                 const workbook = XLSX.read(e.target.result, { type: 'binary' });
@@ -749,6 +730,7 @@ function updateGraphFromSTA() {
     const links = [];
     const nodeFreq = {};
     const linkFreq = {};
+    const linkDetails = {}; // 存储详细的链接信息
     
     // 统计频次
     for (const result of AppState.staResults) {
@@ -756,19 +738,40 @@ function updateGraphFromSTA() {
             const seg = result.segments[i];
             const nodeId = `${seg.stage}-${seg.topic}`;
             
-            nodeFreq[nodeId] = (nodeFreq[nodeId] || 0) + 1;
+            // 统计节点频次
+            if (!nodeFreq[nodeId]) {
+                nodeFreq[nodeId] = { count: 0, conversionCount: 0 };
+            }
+            nodeFreq[nodeId].count++;
+            
+            if (result.conversionAnalysis.isConverted) {
+                nodeFreq[nodeId].conversionCount++;
+            }
             
             // 计算迁移
             if (i > 0) {
                 const prevSeg = result.segments[i - 1];
-                const linkKey = `${prevSeg.stage}-${prevSeg.topic}-${seg.stage}-${seg.topic}`;
-                linkFreq[linkKey] = (linkFreq[linkKey] || 0) + 1;
+                const linkKey = `${prevSeg.stage}-${prevSeg.topic}|${seg.stage}-${seg.topic}`;
+                
+                if (!linkFreq[linkKey]) {
+                    linkFreq[linkKey] = { 
+                        count: 0, 
+                        successCount: 0,
+                        act: seg.act || 'A1',
+                        actName: seg.actName || '未知'
+                    };
+                }
+                linkFreq[linkKey].count++;
+                
+                if (result.conversionAnalysis.isConverted) {
+                    linkFreq[linkKey].successCount++;
+                }
             }
         }
     }
     
     // 创建节点
-    for (const [nodeId, freq] of Object.entries(nodeFreq)) {
+    for (const [nodeId, freqData] of Object.entries(nodeFreq)) {
         const [stageCode, topicCode] = nodeId.split('-');
         const topicDef = TOPIC_DEF[topicCode];
         if (topicDef) {
@@ -778,27 +781,86 @@ function updateGraphFromSTA() {
                 topic: topicCode,
                 name: topicDef.name,
                 group: stageCode,
-                frequency: freq
+                frequency: freqData.count,
+                conversionRate: freqData.count > 0 ? freqData.conversionCount / freqData.count : 0
             });
         }
     }
     
     // 创建边
-    for (const [linkKey, freq] of Object.entries(linkFreq)) {
-        const parts = linkKey.split('-');
-        const sourceId = `${parts[0]}-${parts[1]}`;
-        const targetId = `${parts[2]}-${parts[3]}`;
+    for (const [linkKey, freqData] of Object.entries(linkFreq)) {
+        const [sourceId, targetId] = linkKey.split('|');
+        const weight = freqData.count > 0 ? (freqData.successCount / freqData.count) : 0.5;
         
         links.push({
             source: sourceId,
             target: targetId,
             type: 'C',
-            probability: freq / (nodeFreq[sourceId] || 1),
-            pathType: 'forward'
+            probability: Math.min(freqData.count / 10, 0.95),
+            pathType: 'forward',
+            frequency: freqData.count,
+            weight: weight,
+            act: freqData.act,
+            actName: freqData.actName,
+            successCount: freqData.successCount
         });
     }
     
+    // 更新全局图谱数据
     AppState.graphData = { nodes, links };
+    
+    // V5-Fix: 同时更新推荐引擎
+    initRecommendationEngineFromGraph();
+    
+    console.log('图谱更新完成:', { nodes: nodes.length, links: links.length });
+    console.log('推荐引擎已同步更新');
+}
+
+/**
+ * 从图谱数据初始化推荐引擎 (V5新增)
+ */
+function initRecommendationEngineFromGraph() {
+    if (!AppState.graphData || !AppState.graphData.nodes || AppState.graphData.nodes.length === 0) {
+        console.warn('图谱数据为空，无法初始化推荐引擎');
+        return false;
+    }
+    
+    try {
+        // 将图谱数据转换为推荐引擎格式
+        const topics = AppState.graphData.nodes.map(n => ({
+            id: n.id,
+            name: n.name,
+            stage: n.stage,
+            stageName: STAGE_DEF[n.stage]?.name || n.stage,
+            visitCount: n.frequency || 1,
+            conversionRate: n.conversionRate || 0.5
+        }));
+        
+        const transitions = AppState.graphData.links.map(l => ({
+            from: l.source.id || l.source,
+            to: l.target.id || l.target,
+            act: l.act || 'A1',
+            actName: l.actName || '未知',
+            count: l.frequency || 1,
+            probability: l.probability || 0.5,
+            conversionRate: l.weight || 0.5,
+            weight: l.weight || 0.5,
+            displayWeight: l.weight || 0.5
+        }));
+        
+        const graphData = {
+            nodes: { topics, acts: [] },
+            edges: transitions
+        };
+        
+        // 初始化推荐引擎
+        recommendationEngine = new RecommendationEngine(graphData);
+        console.log('推荐引擎初始化成功:', { topics: topics.length, transitions: transitions.length });
+        return true;
+    } catch (err) {
+        console.error('推荐引擎初始化失败:', err);
+        return false;
+    }
 }
 
 function renderGraph() {
