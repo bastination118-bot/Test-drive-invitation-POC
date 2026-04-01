@@ -45,14 +45,14 @@ body {
     line-height: 1.5;
 }
 
-/* 页面切换 - 强制优先级 */
+/* 页面切换 */
 .page {
-    display: none !important;
+    display: none;
     min-height: 100vh;
 }
 
 .page.active {
-    display: block !important;
+    display: block;
 }
 
 /* 登录页 */

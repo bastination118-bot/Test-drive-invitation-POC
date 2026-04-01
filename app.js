@@ -45,6 +45,10 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initApp() {
+    // 初始化时确保只显示登录页
+    document.getElementById('login-page')?.classList.add('active');
+    document.getElementById('app')?.classList.remove('active');
+    
     // 从localStorage恢复
     const saved = localStorage.getItem('zhiji_sta_v5');
     if (saved) {
@@ -58,7 +62,6 @@ function initApp() {
         }
     }
     
-    initNavigation();
     updateDashboardStats();
 }
 
