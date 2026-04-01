@@ -421,8 +421,49 @@ function analyzeSTA(asrText, callMetadata = {}) {
 }
 
 // ============================================
-// 文件上传与处理
+// 文件上传与处理 (V5: 支持GBK编码自动检测)
 // ============================================
+
+/**
+ * 检测并转换编码 (GBK/UTF-8自动识别)
+ */
+function decodeTextWithEncoding(buffer) {
+    // 首先尝试 UTF-8
+    try {
+        const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+        const utf8Text = utf8Decoder.decode(buffer);
+        // 检查是否包含乱码特征
+        if (!utf8Text.includes('��') && !utf8Text.includes('�')) {
+            return utf8Text;
+        }
+    } catch (e) {
+        // UTF-8 解码失败，尝试 GBK
+    }
+    
+    // 尝试 GBK/GB18030
+    try {
+        const gbkDecoder = new TextDecoder('gb18030', { fatal: false });
+        return gbkDecoder.decode(buffer);
+    } catch (e) {
+        // 兜底: 使用 UTF-8 非严格模式
+        return new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+    }
+}
+
+/**
+ * 检测文本是否为有效的UTF-8中文
+ */
+function isValidChineseText(text) {
+    // 检查常见乱码字符
+    const garbledPattern = /[���|����|锟斤拷|�]/;
+    if (garbledPattern.test(text)) {
+        return false;
+    }
+    
+    // 检查是否包含中文字符
+    const chinesePattern = /[\u4e00-\u9fa5]/;
+    return chinesePattern.test(text);
+}
 
 function handleFileUpload(input) {
     const file = input.files[0];
@@ -435,7 +476,17 @@ function handleFileUpload(input) {
         try {
             let data;
             if (file.name.endsWith('.csv')) {
-                data = parseStandardCSV(e.target.result);
+                // V5: 使用 ArrayBuffer 读取以支持编码检测
+                const buffer = e.target.result;
+                let text = decodeTextWithEncoding(buffer);
+                
+                // 二次校验: 如果检测到乱码，尝试 GBK
+                if (!isValidChineseText(text)) {
+                    const gbkDecoder = new TextDecoder('gb18030', { fatal: false });
+                    text = gbkDecoder.decode(buffer);
+                }
+                
+                data = parseStandardCSV(text);
             } else if (file.name.endsWith('.xlsx')) {
                 const workbook = XLSX.read(e.target.result, { type: 'binary' });
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -447,13 +498,15 @@ function handleFileUpload(input) {
             showNotification(`成功导入 ${data.length} 条通话记录`, 'success');
         } catch (err) {
             showNotification('解析失败: ' + err.message, 'error');
+            console.error('Parse error:', err);
         }
     };
     
     if (file.name.endsWith('.xlsx')) {
         reader.readAsBinaryString(file);
     } else {
-        reader.readAsText(file);
+        // V5: CSV 使用 ArrayBuffer 读取以支持编码检测
+        reader.readAsArrayBuffer(file);
     }
 }
 
