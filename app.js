@@ -202,12 +202,56 @@ async function processInChunks(rows, chunkSize, onProgress) {
     AppState.graphData = builder.buildFromSTAResults(allResults);
     AppState.staResults = allResults;
     
-    // 持久化
-    localStorage.setItem('zhiji_sta_v5', JSON.stringify({
-        staResults: AppState.staResults,
-        graphData: AppState.graphData,
-        timestamp: Date.now()
-    }));
+    // 持久化（带配额保护和采样）
+    try {
+        // 如果数据量过大，只采样存储前1000条和图谱
+        const maxRecords = 1000;
+        const recordsToStore = allResults.length > maxRecords 
+            ? allResults.slice(0, maxRecords) 
+            : allResults;
+        
+        const dataToStore = {
+            staResults: recordsToStore,
+            graphData: AppState.graphData,
+            totalCount: allResults.length,  // 记录原始总数
+            timestamp: Date.now()
+        };
+        
+        const serialized = JSON.stringify(dataToStore);
+        
+        // 检查大小（localStorage通常限制5-10MB）
+        if (serialized.length > 4 * 1024 * 1024) {  // 4MB安全阈值
+            console.warn('数据过大，仅保存图谱结构，不保存原始记录');
+            localStorage.setItem('zhiji_sta_v5', JSON.stringify({
+                staResults: [],  // 不存原始数据
+                graphData: AppState.graphData,
+                totalCount: allResults.length,
+                timestamp: Date.now()
+            }));
+        } else {
+            localStorage.setItem('zhiji_sta_v5', serialized);
+        }
+        
+        showNotification(`成功导入 ${allResults.length} 条案例，生成图谱`, 'success');
+    } catch (e) {
+        console.error('localStorage存储失败:', e);
+        if (e.name === 'QuotaExceededError') {
+            // 配额超限，只存图谱
+            try {
+                localStorage.setItem('zhiji_sta_v5', JSON.stringify({
+                    staResults: [],
+                    graphData: AppState.graphData,
+                    totalCount: allResults.length,
+                    timestamp: Date.now()
+                }));
+                showNotification(`导入成功！因数据量大，仅保存图谱结构`, 'info');
+            } catch (e2) {
+                showNotification('导入成功，但本地存储失败（请刷新后重新上传）', 'warning');
+            }
+        } else {
+            showNotification('导入成功，但本地存储失败', 'warning');
+        }
+    }
     
     // 更新显示
     displaySTAResults();
@@ -328,6 +372,16 @@ function renderGraph() {
     const container = document.getElementById('graph-container');
     if (!container || !AppState.graphData) return;
     
+    const data = AppState.graphData;
+    
+    // 验证数据
+    if (!data.nodes || data.nodes.length === 0) {
+        container.innerHTML = '<div style="text-align:center;padding:50px;color:#999;">暂无节点数据，请上传CSV文件</div>';
+        return;
+    }
+    
+    console.log('渲染图谱:', data.nodes.length, '节点,', data.edges?.length || 0, '边');
+    
     container.innerHTML = '';
     
     const width = container.clientWidth || 800;
@@ -337,40 +391,48 @@ function renderGraph() {
         .append('svg')
         .attr('width', width)
         .attr('height', height)
-        .attr('viewBox', [0, 0, width, height]);
+        .attr('viewBox', [0, 0, width, height])
+        .style('background', '#fafafa');
     
     const g = svg.append('g');
     
     svg.call(d3.zoom()
         .extent([[0, 0], [width, height]])
-        .scaleExtent([0.5, 3])
+        .scaleExtent([0.1, 4])
         .on('zoom', (event) => {
             g.attr('transform', event.transform);
         }));
     
-    const data = AppState.graphData;
+    // 准备边数据 - 确保source/target是id字符串
+    const links = (data.edges || []).map(e => ({
+        ...e,
+        source: typeof e.source === 'object' ? e.source.id : e.source,
+        target: typeof e.target === 'object' ? e.target.id : e.target
+    }));
     
     const simulation = d3.forceSimulation(data.nodes)
-        .force('link', d3.forceLink(data.edges).id(d => d.id).distance(100))
-        .force('charge', d3.forceManyBody().strength(-300))
+        .force('link', d3.forceLink(links).id(d => d.id).distance(120))
+        .force('charge', d3.forceManyBody().strength(-500))
         .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('collision', d3.forceCollide().radius(30));
+        .force('collision', d3.forceCollide().radius(d => (d.radius || 15) + 10));
     
     // 绘制边
     const link = g.append('g')
+        .attr('stroke-opacity', 0.6)
         .selectAll('line')
-        .data(data.edges)
+        .data(links)
         .join('line')
-        .attr('class', d => `link ${d.pathType}`)
-        .attr('stroke-width', d => Math.max(1, (d.probability || 0.5) * 5))
+        .attr('class', d => `link ${d.pathType || ''}`)
+        .attr('stroke-width', d => Math.max(1, Math.min((d.probability || 0.5) * 8, 8)))
         .attr('stroke', d => {
             const rate = d.conversionRate || 0;
             if (rate >= 0.6) return '#4CAF50';
             if (rate >= 0.4) return '#FFC107';
             return '#F44336';
-        });
+        })
+        .attr('stroke-dasharray', d => d.jumpType === 'D' ? '5,5' : null);
     
-    // 绘制节点
+    // 绘制节点组
     const node = g.append('g')
         .selectAll('g')
         .data(data.nodes)
@@ -387,18 +449,22 @@ function renderGraph() {
                 d.fx = null; d.fy = null;
             }));
     
+    // 节点圆圈
     node.append('circle')
-        .attr('r', d => d.radius || 15)
+        .attr('r', d => Math.max(8, Math.min(d.radius || 15, 30)))
         .attr('fill', d => STAGE_DEF[d.stage]?.color || '#999')
         .attr('stroke', '#fff')
-        .attr('stroke-width', 2);
+        .attr('stroke-width', 2)
+        .style('cursor', 'pointer');
     
+    // 节点标签
     node.append('text')
-        .attr('dy', d => (d.radius || 15) + 15)
+        .attr('dy', d => (Math.max(8, Math.min(d.radius || 15, 30)) + 12))
         .attr('text-anchor', 'middle')
-        .text(d => d.name)
+        .text(d => d.name || d.id)
         .attr('fill', '#333')
-        .attr('font-size', '11px');
+        .attr('font-size', '11px')
+        .style('pointer-events', 'none');
     
     simulation.on('tick', () => {
         link
