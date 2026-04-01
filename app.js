@@ -1,6 +1,10 @@
 /**
- * 智己汽车 - 试驾邀约POC (V5.1-Production)
+ * 智己汽车 - 试驾邀约POC (V5.2-Fix)
  * 纯前端实现，GitHub Pages部署
+ * 
+ * 关键修复:
+ * 1. GBK编码自动检测与解码
+ * 2. 按call_id分组，正确构建多轮对话transition
  */
 
 // ============================================
@@ -26,6 +30,32 @@ const STAGE_DEF = {
 };
 
 // ============================================
+// 编码检测与解码
+// ============================================
+function detectAndDecode(arrayBuffer) {
+    const bytes = new Uint8Array(arrayBuffer);
+    
+    // 检测是否包含GBK特征字节
+    let gbkBytes = 0;
+    for (let i = 0; i < Math.min(bytes.length, 1000); i++) {
+        if (bytes[i] > 0x80) {
+            gbkBytes++;
+        }
+    }
+    
+    // 如果高字节比例高，可能是GBK
+    const isGBK = gbkBytes > 10;
+    
+    if (isGBK && typeof decodeGBK === 'function') {
+        console.log('检测到GBK编码，使用GBK解码');
+        return decodeGBK(arrayBuffer);
+    }
+    
+    // 默认UTF-8
+    return new TextDecoder('utf-8').decode(arrayBuffer);
+}
+
+// ============================================
 // 错误边界
 // ============================================
 window.onerror = function(msg, url, line) {
@@ -45,11 +75,9 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initApp() {
-    // 初始化时确保只显示登录页
     document.getElementById('login-page')?.classList.add('active');
     document.getElementById('app')?.classList.remove('active');
     
-    // 从localStorage恢复（只恢复图谱，不恢复原始数据）
     try {
         const saved = localStorage.getItem('zhiji_sta_v5');
         if (saved) {
@@ -110,7 +138,7 @@ function navigateTo(page) {
 }
 
 // ============================================
-// 文件上传与S-T-A分析
+// 文件上传与S-T-A分析（V5.2修复版）
 // ============================================
 function handleFileUpload(input) {
     const file = input.files[0];
@@ -123,21 +151,28 @@ function handleFileUpload(input) {
     reader.onload = async function(e) {
         try {
             let rows = [];
+            
             if (file.name.endsWith('.csv')) {
-                rows = parseCSV(e.target.result);
+                // 使用ArrayBuffer读取，支持编码检测
+                const arrayBuffer = e.target.result;
+                const text = detectAndDecode(arrayBuffer);
+                rows = parseCSV(text);
+                console.log('CSV解析完成，共', rows.length, '行');
             } else if (file.name.endsWith('.xlsx')) {
                 const workbook = XLSX.read(e.target.result, { type: 'binary' });
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
                 rows = XLSX.utils.sheet_to_json(sheet);
             }
             
-            await processInChunks(rows, 50, (progress) => {
-                updateLoadingText(`正在分析S-T-A: ${progress}/${rows.length}`);
+            // 按call_id分组构建完整通话记录
+            const callGroups = groupByCallId(rows);
+            console.log('通话分组完成，共', Object.keys(callGroups).length, '通电话');
+            
+            await processCalls(callGroups, (progress, total) => {
+                updateLoadingText(`正在分析S-T-A: ${progress}/${total}`);
             });
             
             hideLoading();
-            
-            // 自动跳转到图谱页
             setTimeout(() => navigateTo('graph'), 500);
         } catch (err) {
             hideLoading();
@@ -151,105 +186,204 @@ function handleFileUpload(input) {
     if (file.name.endsWith('.xlsx')) {
         reader.readAsBinaryString(file);
     } else {
-        reader.readAsText(file);
+        // CSV使用ArrayBuffer读取以便编码检测
+        reader.readAsArrayBuffer(file);
     }
 }
 
-function parseCSV(text) {
-    const lines = text.split('\n').filter(l => l.trim());
-    if (lines.length < 2) return [];
+/**
+ * 按call_id分组（关键修复）
+ */
+function groupByCallId(rows) {
+    const groups = {};
     
-    const headers = lines[0].split(',').map(h => h.trim());
-    const rows = [];
+    rows.forEach(row => {
+        const callId = row.call_id || row.id || 'unknown';
+        if (!groups[callId]) {
+            groups[callId] = [];
+        }
+        groups[callId].push(row);
+    });
     
-    for (let i = 1; i < lines.length; i++) {
-        const values = lines[i].split(',');
-        const row = {};
-        headers.forEach((h, idx) => {
-            row[h] = values[idx]?.trim() || '';
-        });
-        rows.push(row);
-    }
-    return rows;
+    return groups;
 }
 
-async function processInChunks(rows, chunkSize, onProgress) {
-    const chunks = [];
-    for (let i = 0; i < rows.length; i += chunkSize) {
-        chunks.push(rows.slice(i, i + chunkSize));
-    }
-    
-    let processed = 0;
+/**
+ * 处理分组后的通话记录
+ */
+async function processCalls(callGroups, onProgress) {
+    const callIds = Object.keys(callGroups);
     const allResults = [];
     
-    for (const chunk of chunks) {
-        await new Promise(resolve => setTimeout(resolve, 0));
+    for (let i = 0; i < callIds.length; i++) {
+        const callId = callIds[i];
+        const rows = callGroups[callId];
         
-        const chunkResults = chunk.map(row => analyzeSTA(row));
-        allResults.push(...chunkResults);
-        processed += chunk.length;
-        onProgress(processed);
+        // 按时间排序（如果有时间字段）
+        rows.sort((a, b) => {
+            const timeA = a.audio_date || a.create_time || 0;
+            const timeB = b.audio_date || b.create_time || 0;
+            return timeA - timeB;
+        });
+        
+        // 分析单个通话的所有segments
+        const callResult = analyzeCall(callId, rows);
+        allResults.push(callResult);
+        
+        if (i % 10 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+            onProgress(i + 1, callIds.length);
+        }
     }
     
+    onProgress(callIds.length, callIds.length);
+    
     // 构建图谱
+    console.log('构建图谱，共', allResults.length, '通电话');
     const builder = new Neo4jGraphBuilder();
     AppState.graphData = builder.buildFromSTAResults(allResults);
     AppState.staResults = allResults;
     
-    // 只存图谱，不存原始数据（避免localStorage超限）
+    console.log('图谱构建完成:', 
+        AppState.graphData.nodes.length, '节点,', 
+        AppState.graphData.edges.length, '边');
+    
+    // 存储
     try {
         localStorage.setItem('zhiji_sta_v5', JSON.stringify({
             graphData: AppState.graphData,
             totalCount: allResults.length,
             timestamp: Date.now()
         }));
-        showNotification(`成功导入 ${allResults.length} 条案例，生成图谱`, 'success');
+        showNotification(`成功导入 ${allResults.length} 通电话，生成图谱`, 'success');
     } catch (e) {
         console.error('localStorage存储失败:', e);
         showNotification(`导入成功，但无法本地存储`, 'warning');
     }
     
-    // 更新显示
     displaySTAResults();
 }
 
-function analyzeSTA(row) {
-    const content = row.asr || row.asr_text || row.content || row.message || '';
-    const role = row.role || (content.includes('您好') ? 'sales' : 'customer');
+/**
+ * 分析单个通话的所有对话轮次
+ */
+function analyzeCall(callId, rows) {
+    const segments = [];
     
-    const stage = detectStage(content);
-    const topic = detectTopic(content, stage);
-    const act = detectAct(content, role);
-    
-    return {
-        call_id: row.call_id || row.id || Math.random().toString(36).substr(2, 9),
-        segments: [{
+    rows.forEach((row, idx) => {
+        const content = row.asr || row.asr_text || row.content || row.message || '';
+        const role = row.role || detectRoleByContent(content);
+        
+        const stage = detectStage(content, idx);
+        const topic = detectTopic(content, stage);
+        const act = detectAct(content, role);
+        
+        segments.push({
             stage: stage,
             topic: topic,
             act: act,
             content: content.substring(0, 100),
             role: role,
             topicName: TOPIC_NAMES[topic] || topic,
-            stageName: STAGE_NAMES[stage] || stage
-        }],
+            stageName: STAGE_NAMES[stage] || stage,
+            rowIdx: idx
+        });
+    });
+    
+    // 判断转化（根据最后一条或标记字段）
+    const lastRow = rows[rows.length - 1];
+    const isConverted = (lastRow.reason_type_name || '').includes('意向') || 
+                        (lastRow.result || '').includes('成功') || 
+                        (lastRow.call_result || '').includes('约');
+    
+    return {
+        call_id: callId,
+        segments: segments,
         conversionAnalysis: {
-            isConverted: (row.reason_type_name || '').includes('意向') || 
-                        (row.result || '').includes('成功') || 
-                        Math.random() > 0.5
+            isConverted: isConverted
         }
     };
 }
 
-function detectStage(content) {
+function detectRoleByContent(content) {
+    // 简单启发式：以"您好"开头的是销售
+    if (content.includes('您好') || content.includes('我是') || content.includes('智己')) {
+        return 'sales';
+    }
+    return 'customer';
+}
+
+function parseCSV(text) {
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return [];
+    
+    // 解析表头
+    const headers = parseCSVLine(lines[0]);
+    const rows = [];
+    
+    for (let i = 1; i < lines.length; i++) {
+        const values = parseCSVLine(lines[i]);
+        const row = {};
+        headers.forEach((h, idx) => {
+            row[h] = values[idx] || '';
+        });
+        rows.push(row);
+    }
+    
+    return rows;
+}
+
+/**
+ * 解析CSV单行（处理引号内的逗号）
+ */
+function parseCSVLine(line) {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        
+        if (char === '"') {
+            if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++; // 跳过下一个引号
+            } else {
+                inQuotes = !inQuotes;
+            }
+        } else if (char === ',' && !inQuotes) {
+            result.push(current.trim());
+            current = '';
+        } else {
+            current += char;
+        }
+    }
+    
+    result.push(current.trim());
+    return result;
+}
+
+// ============================================
+// Stage/Topic/Act 识别
+// ============================================
+function detectStage(content, idx) {
+    // 根据对话位置和内容综合判断
     const keywords = {
-        'S1': ['您好', '我是', '智己', '看到您', '关注到'],
-        'S2': ['关注哪款', '看的是', '预算', '用途', '试驾'],
-        'S3': ['配置', '续航', '价格', '优惠', '补贴'],
-        'S4': ['贵', '考虑', '担心', '顾虑', '比较'],
-        'S5': ['微信', '加您', '约', '时间', '确认']
+        'S1': ['您好', '我是', '智己', '看到您', '关注到', '留资'],
+        'S2': ['关注哪款', '看的是', '预算', '用途', '试驾', '需求'],
+        'S3': ['配置', '续航', '价格', '优惠', '补贴', '性能'],
+        'S4': ['贵', '考虑', '担心', '顾虑', '比较', '犹豫'],
+        'S5': ['微信', '加您', '约', '时间', '确认', '周六', '周日']
     };
     
-    let bestStage = 'S1';
+    // 如果是开场，优先S1
+    if (idx <= 2) {
+        for (const word of keywords['S1']) {
+            if (content.includes(word)) return 'S1';
+        }
+    }
+    
+    let bestStage = 'S2';
     let maxScore = 0;
     
     for (const [stage, words] of Object.entries(keywords)) {
@@ -259,30 +393,44 @@ function detectStage(content) {
             bestStage = stage;
         }
     }
+    
     return bestStage;
 }
 
 function detectTopic(content, stage) {
-    const topicMap = {
-        'S1': 'T1-1', 'S2': 'T2-1', 'S3': 'T3-1', 'S4': 'T4-1', 'S5': 'T5-1'
+    const keywords = {
+        'T1-1': ['您好', '我是', '智己'],
+        'T1-2': ['留资', '关注到', '看到您'],
+        'T2-1': ['车型', '关注哪款', '看的是'],
+        'T2-2': ['试驾', '体验'],
+        'T3-1': ['续航', '配置', '空间'],
+        'T3-2': ['价格', '优惠', '补贴', '多少钱'],
+        'T4-1': ['贵', '便宜', '降价'],
+        'T5-1': ['微信', '加您', '联系'],
+        'T5-2': ['时间', '周六', '周日', '约']
     };
     
-    // 根据关键词细化Topic
-    if (stage === 'S3' && content.includes('续航')) return 'T3-1';
-    if (stage === 'S3' && content.includes('价格')) return 'T3-2';
-    if (stage === 'S4' && content.includes('贵')) return 'T4-1';
+    for (const [topic, words] of Object.entries(keywords)) {
+        if (words.some(w => content.includes(w))) {
+            return topic;
+        }
+    }
     
-    return topicMap[stage] || 'T1-1';
+    // 默认根据stage返回
+    const defaults = {
+        'S1': 'T1-1', 'S2': 'T2-1', 'S3': 'T3-1', 'S4': 'T4-1', 'S5': 'T5-1'
+    };
+    return defaults[stage] || 'T1-1';
 }
 
 function detectAct(content, role) {
     if (role !== 'sales') return 'A1';
     
-    if (content.includes('解释') || content.includes('介绍')) return 'A1';
-    if (content.includes('确认') || content.includes('定')) return 'A2';
-    if (content.includes('优惠') || content.includes('补贴')) return 'A3';
-    if (content.includes('时间') || content.includes('周六')) return 'A4';
-    if (content.includes('月底') || content.includes('截止')) return 'A5';
+    if (content.includes('解释') || content.includes('介绍') || content.includes('因为')) return 'A1';
+    if (content.includes('确认') || content.includes('对吗') || content.includes('是吧')) return 'A2';
+    if (content.includes('优惠') || content.includes('补贴') || content.includes('送')) return 'A3';
+    if (content.includes('时间') || content.includes('周六') || content.includes('周日')) return 'A4';
+    if (content.includes('月底') || content.includes('截止') || content.includes('活动')) return 'A5';
     
     return 'A1';
 }
@@ -294,30 +442,36 @@ function displaySTAResults() {
     const container = document.getElementById('sta-results-container');
     if (!container) return;
     
-    const sample = AppState.staResults.slice(0, 5);
+    // 取第一通电话展示
+    const firstCall = AppState.staResults[0];
+    if (!firstCall) {
+        container.innerHTML = '<p>暂无分析结果</p>';
+        return;
+    }
     
     container.innerHTML = `
-        <h3>S-T-A分析结果（前5条示例）</h3>
+        <h3>S-T-A分析结果示例（通话ID: ${firstCall.call_id}）</h3>
         <div class="sta-list">
-            ${sample.map(r => `
-                <div class="sta-item">
-                    <div class="sta-header">
-                        <span class="sta-id">${r.call_id}</span>
-                        <span class="sta-conversion ${r.conversionAnalysis?.isConverted ? 'converted' : ''}">
-                            ${r.conversionAnalysis?.isConverted ? '✓ 转化' : '○ 未转化'}
-                        </span>
-                    </div>
-                    <div class="sta-segments">
-                        ${r.segments.map(s => `
-                            <div class="sta-seg">
-                                <span class="stage-badge" style="background:${STAGE_DEF[s.stage]?.color}">${s.stage}</span>
-                                <span>${s.content.substring(0, 50)}...</span>
-                            </div>
-                        `).join('')}
-                    </div>
+            <div class="sta-item">
+                <div class="sta-header">
+                    <span class="sta-conversion ${firstCall.conversionAnalysis?.isConverted ? 'converted' : ''}">
+                        ${firstCall.conversionAnalysis?.isConverted ? '✓ 转化成功' : '○ 未转化'}
+                    </span>
                 </div>
-            `).join('')}
+                <div class="sta-segments">
+                    ${firstCall.segments.map((s, idx) => `
+                        <div class="sta-seg">
+                            <span class="seg-idx">${idx + 1}</span>
+                            <span class="stage-badge" style="background:${STAGE_DEF[s.stage]?.color}">${s.stage}</span>
+                            <span class="topic-badge">${s.topic}</span>
+                            <span class="act-badge">${s.act}</span>
+                            <span class="content">${s.content}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
         </div>
+        <p style="color:#999;margin-top:10px;">共分析 ${AppState.staResults.length} 通电话</p>
     `;
 }
 
@@ -326,13 +480,15 @@ function displaySTAResults() {
 // ============================================
 function renderGraph() {
     const container = document.getElementById('graph-container');
-    if (!container || !AppState.graphData) return;
+    if (!container || !AppState.graphData) {
+        container.innerHTML = '<div style="text-align:center;padding:50px;color:#999;">请先上传CSV数据</div>';
+        return;
+    }
     
     const data = AppState.graphData;
     
-    // 验证数据
     if (!data.nodes || data.nodes.length === 0) {
-        container.innerHTML = '<div style="text-align:center;padding:50px;color:#999;">暂无节点数据，请上传CSV文件</div>';
+        container.innerHTML = '<div style="text-align:center;padding:50px;color:#999;">暂无节点数据</div>';
         return;
     }
     
@@ -348,7 +504,7 @@ function renderGraph() {
         .attr('width', width)
         .attr('height', height)
         .attr('viewBox', [0, 0, width, height])
-        .style('background', '#fafafa');
+        .style('background', '#f5f5f5');
     
     const g = svg.append('g');
     
@@ -359,41 +515,56 @@ function renderGraph() {
             g.attr('transform', event.transform);
         }));
     
-    // 准备边数据 - 确保source/target是id字符串
+    // 准备边数据
     const links = (data.edges || []).map(e => ({
         ...e,
         source: typeof e.source === 'object' ? e.source.id : e.source,
         target: typeof e.target === 'object' ? e.target.id : e.target
     }));
     
+    console.log('D3 links:', links.length);
+    
     const simulation = d3.forceSimulation(data.nodes)
-        .force('link', d3.forceLink(links).id(d => d.id).distance(120))
-        .force('charge', d3.forceManyBody().strength(-500))
+        .force('link', d3.forceLink(links).id(d => d.id).distance(150))
+        .force('charge', d3.forceManyBody().strength(-600))
         .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('collision', d3.forceCollide().radius(d => (d.radius || 15) + 10));
+        .force('collision', d3.forceCollide().radius(d => (d.radius || 20) + 15));
+    
+    // 绘制箭头标记
+    svg.append('defs').selectAll('marker')
+        .data(['end'])
+        .enter().append('marker')
+        .attr('id', 'arrow')
+        .attr('viewBox', '0 -5 10 10')
+        .attr('refX', 25)
+        .attr('refY', 0)
+        .attr('markerWidth', 6)
+        .attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M0,-5L10,0L0,5')
+        .attr('fill', '#999');
     
     // 绘制边
     const link = g.append('g')
-        .attr('stroke-opacity', 0.6)
         .selectAll('line')
         .data(links)
         .join('line')
-        .attr('class', d => `link ${d.pathType || ''}`)
-        .attr('stroke-width', d => Math.max(1, Math.min((d.probability || 0.5) * 8, 8)))
         .attr('stroke', d => {
             const rate = d.conversionRate || 0;
             if (rate >= 0.6) return '#4CAF50';
             if (rate >= 0.4) return '#FFC107';
             return '#F44336';
         })
-        .attr('stroke-dasharray', d => d.jumpType === 'D' ? '5,5' : null);
+        .attr('stroke-width', d => Math.max(2, (d.probability || 0.3) * 8))
+        .attr('stroke-opacity', 0.7)
+        .attr('marker-end', 'url(#arrow)');
     
-    // 绘制节点组
+    // 绘制节点
     const node = g.append('g')
         .selectAll('g')
         .data(data.nodes)
         .join('g')
-        .attr('class', 'node')
         .call(d3.drag()
             .on('start', (e, d) => {
                 if (!e.active) simulation.alphaTarget(0.3).restart();
@@ -405,22 +576,19 @@ function renderGraph() {
                 d.fx = null; d.fy = null;
             }));
     
-    // 节点圆圈
     node.append('circle')
-        .attr('r', d => Math.max(8, Math.min(d.radius || 15, 30)))
+        .attr('r', d => d.radius || 20)
         .attr('fill', d => STAGE_DEF[d.stage]?.color || '#999')
         .attr('stroke', '#fff')
-        .attr('stroke-width', 2)
-        .style('cursor', 'pointer');
+        .attr('stroke-width', 3);
     
-    // 节点标签
     node.append('text')
-        .attr('dy', d => (Math.max(8, Math.min(d.radius || 15, 30)) + 12))
+        .attr('dy', d => (d.radius || 20) + 15)
         .attr('text-anchor', 'middle')
-        .text(d => d.name || d.id)
+        .text(d => d.name)
         .attr('fill', '#333')
-        .attr('font-size', '11px')
-        .style('pointer-events', 'none');
+        .attr('font-size', '12px')
+        .attr('font-weight', '500');
     
     simulation.on('tick', () => {
         link
@@ -436,16 +604,11 @@ function renderGraph() {
 // 实时引导 - 3选1推荐
 // ============================================
 function initGuidePage() {
-    const container = document.getElementById('page-guide');
-    if (!container || container.dataset.initialized) return;
-    
-    // HTML已在index.html中定义
-    container.dataset.initialized = 'true';
+    // 已在HTML中定义
 }
 
 function generateRecommendation() {
-    const intentInput = document.getElementById('customer-intent');
-    const intent = intentInput?.value?.trim();
+    const intent = document.getElementById('customer-intent')?.value?.trim();
     
     if (!intent) {
         showNotification('请输入客户意图', 'error');
@@ -453,7 +616,7 @@ function generateRecommendation() {
     }
     
     if (!AppState.graphData) {
-        showNotification('请先上传CSV案例数据以生成推荐图谱', 'error');
+        showNotification('请先上传CSV案例数据', 'error');
         return;
     }
     
@@ -468,19 +631,14 @@ function renderOptions(options) {
     if (!container) return;
     
     container.innerHTML = `
-        <h3>基于历史数据的3条推荐策略：</h3>
+        <h3>推荐策略：</h3>
         <div class="options-grid">
             ${options.map((opt, idx) => `
                 <div class="option-card ${opt.riskLevel}" onclick="selectOption(${idx})">
                     <div class="opt-rank">${opt.rank}</div>
-                    <div class="opt-label">${opt.strategyLabel}</div>
                     <div class="opt-act">${opt.actName}</div>
                     <div class="opt-script">${opt.scriptTemplate}</div>
-                    <div class="opt-stats">
-                        <span class="rate">转化率 ${opt.successRate}</span>
-                        <span class="count">历史使用 ${opt.usageCount}次</span>
-                    </div>
-                    <div class="opt-reply-preview">客户可能回复："${opt.predictedReply}"</div>
+                    <div class="opt-stats">转化率: ${opt.successRate} | 使用: ${opt.usageCount}次</div>
                 </div>
             `).join('')}
         </div>
@@ -493,33 +651,16 @@ function selectOption(index) {
     const option = AppState.currentOptions?.[index];
     if (!option) return;
     
-    // 记录对话
     AppState.conversationHistory.push({
         sales: option.scriptTemplate,
         customer: option.predictedReply,
         topic: option.toTopicId
     });
     
-    // 更新当前Topic
     AppState.currentTopicId = option.toTopicId;
-    
-    // 渲染对话流
     renderConversationFlow();
     
-    // 提示下一轮
-    const container = document.getElementById('recommendation-result');
-    if (container) {
-        container.innerHTML += `
-            <div class="next-round-hint">
-                已选择"${option.actName}"，客户回复已模拟。
-                <br>继续输入下一轮客户问题...
-            </div>
-        `;
-    }
-    
-    // 清空输入
-    const input = document.getElementById('customer-intent');
-    if (input) input.value = '';
+    document.getElementById('customer-intent').value = '';
 }
 
 function renderConversationFlow() {
@@ -528,7 +669,7 @@ function renderConversationFlow() {
     
     container.innerHTML = `
         <h3>对话历史</h3>
-        ${AppState.conversationHistory.map((turn, i) => `
+        ${AppState.conversationHistory.map(turn => `
             <div class="turn">
                 <div class="sales-bubble"><strong>销售：</strong>${turn.sales}</div>
                 <div class="customer-bubble"><strong>客户：</strong>${turn.customer}</div>
@@ -590,7 +731,6 @@ function showNotification(message, type = 'info') {
         color: white;
         border-radius: 4px;
         z-index: 10000;
-        animation: slideIn 0.3s ease;
     `;
     document.body.appendChild(notif);
     setTimeout(() => notif.remove(), 3000);
